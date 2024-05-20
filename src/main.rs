@@ -118,7 +118,7 @@ fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
             match (key.kind, key.code) {
                 (KeyEventKind::Press, KeyCode::Esc) => return Ok(true),
                 (KeyEventKind::Press, KeyCode::Down) => {
-                    let max_idx = app_state.db_rows.len().checked_sub(1).unwrap_or(0);
+                    let max_idx = app_state.db_rows.len().saturating_sub(1);
                     let selected = app_state.state.selected().unwrap_or(0);
 
                     let selection = if selected == max_idx {
@@ -130,23 +130,20 @@ fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
                     app_state.state.select(Some(selection));
                 }
                 (KeyEventKind::Press, KeyCode::Up) => app_state.state.select(Some(
-                    app_state
-                        .state
-                        .selected()
-                        .unwrap_or(0)
-                        .checked_sub(1)
-                        .unwrap_or(0),
+                    app_state.state.selected().unwrap_or(0).saturating_sub(1),
                 )),
                 (KeyEventKind::Press, KeyCode::Enter) => {
-                    Clipboard::new()
-                        .unwrap()
-                        .set_text(&app_state.db_rows[app_state.state.selected().unwrap()][0])
-                        .unwrap();
-                    return Ok(true);
+                    if !app_state.db_rows.is_empty() {
+                        Clipboard::new()
+                            .unwrap()
+                            .set_text(&app_state.db_rows[app_state.state.selected().unwrap()][0])
+                            .unwrap();
+                        return Ok(true);
+                    }
                 }
                 (KeyEventKind::Press, KeyCode::Delete) => {
                     let selected = app_state.state.selected().unwrap_or(0);
-                    if app_state.db_rows.len() > 0 {
+                    if !app_state.db_rows.is_empty() {
                         let clip = app_state.db_rows.remove(selected);
                         let query = format!("DELETE FROM clips WHERE clip = '{}';", clip[0]);
                         app_state
