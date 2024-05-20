@@ -21,6 +21,8 @@ use std::io;
 use std::io::stdout;
 use std::io::IsTerminal;
 use std::io::Read;
+use std::thread;
+use std::time;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -200,19 +202,26 @@ impl AppState {
 #[cfg(target_os = "linux")]
 fn daemon(db: Connection) -> Result<(), Error> {
     use arboard::SetExtLinux;
+    let one_sec = time::Duration::from_secs(1);
     let mut clipboard = Clipboard::new().unwrap();
 
     loop {
-        let text = clipboard.get_text().unwrap();
-        let query = format!(
-            "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
-             INSERT OR IGNORE INTO clips (clip) VALUES ('{text}');"
-        );
+        let text = clipboard.get_text().unwrap_or("pare_daemonized".into());
 
-        db.execute(query)
-            .change_context(Error)
-            .attach_printable("insertion into database failed")?;
-        clipboard.set().wait().text(text).unwrap();
+        if text != "pare_daemonized" {
+            let query = format!(
+                "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
+             INSERT OR IGNORE INTO clips (clip) VALUES ('{text}');"
+            );
+            db.execute(query)
+                .change_context(Error)
+                .attach_printable("insertion into database failed")?;
+            clipboard.set().wait().text(text).unwrap();
+        } else {
+            // The clipboard might not be intialized with anything so we
+            // need to wait until something is on the clipboard
+            thread::sleep(one_sec);
+        }
     }
 }
 
@@ -221,15 +230,13 @@ fn daemon(db: Connection) -> Result<(), Error> {
 // TODO: Setup clipboard event monitoring for Windows
 // NOTE: Doing a polling busy loop isn't ideal, but it is what it is for now
 fn daemon(db: Connection) -> Result<(), Error> {
-    use std::{thread, time};
-
     let one_sec = time::Duration::from_secs(1);
 
     let mut clipboard = Clipboard::new().unwrap();
 
     let mut previous = String::new();
     loop {
-        let current = clipboard.get_text().unwrap();
+        let current = clipboard.get_text().unwrap_or("pared_daemonized".into());
         if current != previous {
             let query = format!(
                 "CREATE TABLE IF NOT EXISTS clips (clip STRING PRIMARY KEY);
@@ -239,6 +246,7 @@ fn daemon(db: Connection) -> Result<(), Error> {
             db.execute(query)
                 .change_context(Error)
                 .attach_printable("insertion into database failed")?;
+            previous = current;
         } else {
             thread::sleep(one_sec);
         }
