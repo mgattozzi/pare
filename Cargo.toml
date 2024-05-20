@@ -2,6 +2,9 @@
 name = "pare"
 version = "0.1.0"
 edition = "2021"
+authors = ["Michael Gattozzi <michael@ductile.systems>"]
+repository = "https://github.com/mgattozzi/pare"
+description = "A cross platform clipboard manager and monitor"
 
 [dependencies]
 arboard = "3.4.0"
