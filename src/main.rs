@@ -49,33 +49,40 @@ fn main() -> Result<(), Error> {
 
     let stdin = io::stdin();
     if stdin.is_terminal() {
-        enable_raw_mode().change_context(Error)?;
-        stdout()
-            .execute(EnterAlternateScreen)
-            .change_context(Error)?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).change_context(Error)?;
-        let mut rows = Vec::new();
+        let result = || -> Result<(), Error> {
+            enable_raw_mode().change_context(Error)?;
+            stdout()
+                .execute(EnterAlternateScreen)
+                .change_context(Error)?;
+            let mut terminal =
+                Terminal::new(CrosstermBackend::new(stdout())).change_context(Error)?;
+            let mut rows = Vec::new();
 
-        let query = "SELECT clip FROM clips;";
-        db.iterate(query, |pairs| {
-            rows.push([pairs[0].1.unwrap().into()]);
-            true
-        })
-        .change_context(Error)
-        .attach_printable("insertion into database failed")?;
+            let query = "SELECT clip FROM clips;";
+            db.iterate(query, |pairs| {
+                rows.push([pairs[0].1.unwrap().into()]);
+                true
+            })
+            .change_context(Error)
+            .attach_printable("insertion into database failed")?;
 
-        let mut state = AppState::new(rows, db);
+            let mut state = AppState::new(rows, db);
 
-        let mut should_quit = false;
-        while !should_quit {
-            terminal.draw(|f| ui(f, &mut state)).change_context(Error)?;
-            should_quit = handle_events(&mut state).change_context(Error)?;
-        }
+            let mut should_quit = false;
+            while !should_quit {
+                terminal.draw(|f| ui(f, &mut state)).change_context(Error)?;
+                should_quit = handle_events(&mut state).change_context(Error)?;
+            }
+
+            Ok(())
+        }();
 
         disable_raw_mode().change_context(Error)?;
         stdout()
             .execute(LeaveAlternateScreen)
             .change_context(Error)?;
+
+        result
     } else {
         let mut clip = String::new();
         let mut handle = stdin.lock();
@@ -99,8 +106,8 @@ fn main() -> Result<(), Error> {
             .set_text(clip)
             .change_context(Error)
             .attach_printable("unable to set text for the clipboard")?;
+        Ok(())
     }
-    Ok(())
 }
 
 fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
