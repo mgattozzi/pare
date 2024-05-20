@@ -4,9 +4,10 @@ use crossterm::event;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEventKind;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::disable_raw_mode;
+use crossterm::terminal::enable_raw_mode;
+use crossterm::terminal::EnterAlternateScreen;
+use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::ExecutableCommand;
 use error_stack::Context;
 use error_stack::Result;
@@ -23,10 +24,13 @@ use std::io::Read;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {}
+struct Args {
+    #[arg(short, long)]
+    daemon: bool,
+}
 
 fn main() -> Result<(), Error> {
-    let _args = Args::parse();
+    let args = Args::parse();
 
     let db_folder = dirs::data_dir()
         .expect("data dir for the platform should exist")
@@ -39,6 +43,10 @@ fn main() -> Result<(), Error> {
         .change_context(Error)
         .attach_printable("unable to open the sqlite database")?;
 
+    if args.daemon {
+        return daemon(db);
+    }
+
     let stdin = io::stdin();
     if stdin.is_terminal() {
         enable_raw_mode().change_context(Error)?;
@@ -48,9 +56,9 @@ fn main() -> Result<(), Error> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).change_context(Error)?;
         let mut rows = Vec::new();
 
-        let query = "SELECT * FROM clips";
+        let query = "SELECT clip FROM clips;";
         db.iterate(query, |pairs| {
-            rows.push([pairs[1].1.unwrap().into()]);
+            rows.push([pairs[0].1.unwrap().into()]);
             true
         })
         .change_context(Error)
@@ -77,10 +85,8 @@ fn main() -> Result<(), Error> {
             .attach_printable("unable to read in data from stdin")?;
 
         let query = format!(
-            "
-      CREATE TABLE IF NOT EXISTS clips (id INTEGER PRIMARY KEY AUTOINCREMENT, clip STRING);
-      INSERT INTO clips (clip) VALUES ('{clip}');
-    "
+            "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
+             INSERT OR IGNORE INTO clips (clip) VALUES ('{clip}');"
         );
 
         db.execute(query)
@@ -132,13 +138,8 @@ fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
                 (KeyEventKind::Press, KeyCode::Delete) => {
                     let selected = app_state.state.selected().unwrap_or(0);
                     if app_state.db_rows.len() > 0 {
-                        app_state.db_rows.remove(selected);
-                        let query = format!(
-                            "DELETE FROM clips
-                          WHERE id in
-                          (SELECT id FROM clips LIMIT 1 OFFSET {selected})
-                        "
-                        );
+                        let clip = app_state.db_rows.remove(selected);
+                        let query = format!("DELETE FROM clips WHERE clip = '{}';", clip[0]);
                         app_state
                             .db
                             .execute(query)
@@ -185,6 +186,54 @@ impl AppState {
             db_rows,
             db,
             state: TableState::default().with_selected(0),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn daemon(db: Connection) -> Result<(), Error> {
+    use arboard::SetExtLinux;
+    let mut clipboard = Clipboard::new().unwrap();
+
+    loop {
+        let text = clipboard.get_text().unwrap();
+        let query = format!(
+            "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
+             INSERT OR IGNORE INTO clips (clip) VALUES ('{text}');"
+        );
+
+        db.execute(query)
+            .change_context(Error)
+            .attach_printable("insertion into database failed")?;
+        clipboard.set().wait().text(text).unwrap();
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+// TODO: Setup clipboard event monitoring for OSX
+// TODO: Setup clipboard event monitoring for Windows
+// NOTE: Doing a polling busy loop isn't ideal, but it is what it is for now
+fn daemon(db: Connection) -> Result<(), Error> {
+    use std::{thread, time};
+
+    let one_sec = time::Duration::from_secs(1);
+
+    let mut clipboard = Clipboard::new().unwrap();
+
+    let mut previous = String::new();
+    loop {
+        let current = clipboard.get_text().unwrap();
+        if current != previous {
+            let query = format!(
+                "CREATE TABLE IF NOT EXISTS clips (clip STRING PRIMARY KEY);
+                 INSERT OR IGNORE INTO clips (clip) VALUES ('{current}');"
+            );
+
+            db.execute(query)
+                .change_context(Error)
+                .attach_printable("insertion into database failed")?;
+        } else {
+            thread::sleep(one_sec);
         }
     }
 }
