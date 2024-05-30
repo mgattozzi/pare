@@ -14,7 +14,7 @@ use error_stack::Result;
 use error_stack::ResultExt;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use sqlite::Connection;
+use rusqlite::Connection;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -41,7 +41,7 @@ fn main() -> Result<(), Error> {
     fs::create_dir_all(db_folder)
         .change_context(Error)
         .attach_printable("unable to create data folder for sqlite database")?;
-    let db = sqlite::open(db_path)
+    let db = Connection::open(db_path)
         .change_context(Error)
         .attach_printable("unable to open the sqlite database")?;
 
@@ -60,13 +60,28 @@ fn main() -> Result<(), Error> {
                 Terminal::new(CrosstermBackend::new(stdout())).change_context(Error)?;
             let mut rows = Vec::new();
 
-            let query = "SELECT clip FROM clips;";
-            db.iterate(query, |pairs| {
-                rows.push([pairs[0].1.unwrap().into()]);
-                true
-            })
-            .change_context(Error)
-            .attach_printable("insertion into database failed")?;
+            {
+                let mut stmt = db
+                    .prepare("SELECT clip FROM clips;")
+                    .change_context(Error)
+                    .attach_printable("prepare stmt for database failed")?;
+                let mut res = stmt
+                    .query([])
+                    .change_context(Error)
+                    .attach_printable("query to database failed")?;
+                loop {
+                    match res.next() {
+                        Ok(Some(row)) => {
+                            // The db has just one column so this should be fine
+                            rows.push([row.get_unwrap(0)]);
+                        }
+                        Ok(None) => break,
+                        Err(e) => Err(e)
+                            .change_context(Error)
+                            .attach_printable("query to database failed")?,
+                    }
+                }
+            }
 
             let mut state = AppState::new(rows, db);
 
@@ -93,12 +108,13 @@ fn main() -> Result<(), Error> {
             .change_context(Error)
             .attach_printable("unable to read in data from stdin")?;
 
-        let query = format!(
-            "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
-             INSERT OR IGNORE INTO clips (clip) VALUES ('{clip}');"
-        );
-
-        db.execute(query)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);",
+            [],
+        )
+        .change_context(Error)
+        .attach_printable("database table creation failed")?;
+        db.execute("INSERT OR IGNORE INTO clips (clip) VALUES (?1);", [&clip])
             .change_context(Error)
             .attach_printable("insertion into database failed")?;
         let mut clipboard = Clipboard::new()
@@ -135,9 +151,17 @@ fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
                 (KeyEventKind::Press, KeyCode::Enter) => {
                     if !app_state.db_rows.is_empty() {
                         Clipboard::new()
-                            .unwrap()
-                            .set_text(&app_state.db_rows[app_state.state.selected().unwrap()][0])
-                            .unwrap();
+                            .change_context(Error)
+                            .attach_printable("access to clipboard failed")?
+                            .set_text(
+                                &app_state.db_rows[app_state
+                                    .state
+                                    .selected()
+                                    .ok_or(Error)
+                                    .attach_printable("failed to set clipboard text")?][0],
+                            )
+                            .change_context(Error)
+                            .attach_printable("failed to set clipboard text")?;
                         return Ok(true);
                     }
                 }
@@ -145,10 +169,9 @@ fn handle_events(app_state: &mut AppState) -> Result<bool, Error> {
                     let selected = app_state.state.selected().unwrap_or(0);
                     if !app_state.db_rows.is_empty() {
                         let clip = app_state.db_rows.remove(selected);
-                        let query = format!("DELETE FROM clips WHERE clip = '{}';", clip[0]);
                         app_state
                             .db
-                            .execute(query)
+                            .execute("DELETE FROM clips WHERE clip = ?1;", clip)
                             .change_context(Error)
                             .attach_printable("delete from database failed")?;
                     }
@@ -200,20 +223,29 @@ impl AppState {
 fn daemon(db: Connection) -> Result<(), Error> {
     use arboard::SetExtLinux;
     let one_sec = time::Duration::from_secs(1);
-    let mut clipboard = Clipboard::new().unwrap();
+    let mut clipboard = Clipboard::new()
+        .change_context(Error)
+        .attach_printable("access to clipboard failed")?;
 
     loop {
         let text = clipboard.get_text().unwrap_or("pare_daemonized".into());
 
         if text != "pare_daemonized" {
-            let query = format!(
-                "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);
-             INSERT OR IGNORE INTO clips (clip) VALUES ('{text}');"
-            );
-            db.execute(query)
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);",
+                [],
+            )
+            .change_context(Error)
+            .attach_printable("database table creation failed")?;
+            db.execute("INSERT OR IGNORE INTO clips (clip) VALUES (?1);", [&text])
                 .change_context(Error)
                 .attach_printable("insertion into database failed")?;
-            clipboard.set().wait().text(text).unwrap();
+            clipboard
+                .set()
+                .wait()
+                .text(text)
+                .change_context(Error)
+                .attach_printable("failed to set clipboard text")?;
         } else {
             // The clipboard might not be intialized with anything so we
             // need to wait until something is on the clipboard
@@ -229,18 +261,21 @@ fn daemon(db: Connection) -> Result<(), Error> {
 fn daemon(db: Connection) -> Result<(), Error> {
     let one_sec = time::Duration::from_secs(1);
 
-    let mut clipboard = Clipboard::new().unwrap();
+    let mut clipboard = Clipboard::new()
+        .change_context(Error)
+        .attach_printable("access to clipboard failed")?;
 
     let mut previous = String::new();
     loop {
         let current = clipboard.get_text().unwrap_or("pared_daemonized".into());
         if current != previous {
-            let query = format!(
-                "CREATE TABLE IF NOT EXISTS clips (clip STRING PRIMARY KEY);
-                 INSERT OR IGNORE INTO clips (clip) VALUES ('{current}');"
-            );
-
-            db.execute(query)
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS clips (clip TEXT PRIMARY KEY);",
+                [],
+            )
+            .change_context(Error)
+            .attach_printable("database table creation failed")?;
+            db.execute("INSERT OR IGNORE INTO clips (clip) VALUES (?1);", [&text])
                 .change_context(Error)
                 .attach_printable("insertion into database failed")?;
             previous = current;
